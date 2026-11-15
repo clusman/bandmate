@@ -138,6 +138,17 @@ export function makeChord(key, p, q = p.q) {
   };
 }
 
+// Spell chord tones from the root letter (F7 = F A C Eb, never D#).
+const IV_LETTER = { 0:0, 1:1, 2:1, 3:2, 4:2, 5:3, 6:4, 7:4, 8:4, 9:5, 10:6, 11:6, 14:1 };
+export function chordNotes(chord) {
+  const rn = /^[A-G][#b]?/.exec(chord.name)[0], l0 = LETTERS.indexOf(rn[0]);
+  return QUALITY[chord.q].iv.map(x => {
+    const li = (l0 + (chord.q === 'dim7' && x === 9 ? 6 : IV_LETTER[x])) % 7;
+    let d = mod(chord.root + x - LETTER_PC[li], 12); if (d > 6) d -= 12;
+    return LETTERS[li] + (d > 0 ? '#'.repeat(d) : 'b'.repeat(-d));
+  });
+}
+
 export function diatonicChords(key, sevenths) {
   return key.iv.map((_, i) => {
     const p = parseTok(key, i + 1);

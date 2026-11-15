@@ -1,5 +1,5 @@
 import { generate, STYLES, randomName, SEC_COLOR, RHYTHMS, rhythmPattern } from './generator.js';
-import { parseTok, makeChord, seventhOf } from './theory.js';
+import { parseTok, makeChord, seventhOf, chordNotes } from './theory.js';
 import { Engine, INSTRUMENTS, lowerBound } from './audio.js';
 import { songToMidi } from './midi.js';
 import { KEY_LABELS, MODES, makeKey, noteName, sigText, diatonicChords, pcName, mod, voiceChord } from './theory.js';
@@ -220,6 +220,7 @@ function drawArr(b, playing) {
     g.fillStyle = c + (on ? '66' : '2a'); rr(g, x, L.y + 4, w, L.h - 9, 6); g.fill();
     g.fillStyle = c; g.fillRect(x, L.y + 4, 3, L.h - 9);
     if (on) { g.strokeStyle = c; g.lineWidth = 1.5; rr(g, x, L.y + 4, w, L.h - 9, 6); g.stroke(); }
+    else if (S.edit) { g.setLineDash([4, 3]); g.strokeStyle = '#9775fa'; g.lineWidth = 1; rr(g, x + .5, L.y + 4.5, w - 1, L.h - 10, 6); g.stroke(); g.setLineDash([]); }
     if (w > 22) {
       g.save(); g.beginPath(); g.rect(x, L.y, w - 2, L.h); g.clip();
       g.fillStyle = '#eef1f6'; g.font = '800 13px system-ui, sans-serif'; g.fillText(ch.c.name, x + 7, L.y + 17);
@@ -290,6 +291,7 @@ A.cv.addEventListener('click', e => {
   if (lane.id === 'ruler') { S.sel = ch.sec; S.selChord = null; seek(beat); }
   else if (lane.id === 'keys') {
     const i = song.chords.indexOf(ch);
+    if (S.edit) { S.selChord = i; S.sel = ch.sec; S.dirty = true; return editChordAt(i); }
     S.selChord = S.selChord === i ? null : i; S.sel = ch.sec;
     if (S.selChord != null && !engine.playing) previewChord(ch.v);
   } else seek(beat);
@@ -330,9 +332,11 @@ function groupName(sec) { return S.song.sections.filter(s => s.group === sec.gro
 
 function renderInfo() {
   const el = $('#infoStrip'), song = S.song;
-  if (S.selChord != null) {
+  if (S.edit && S.selChord == null) {
+    el.innerHTML = `<span class="big" style="color:#d0bfff">✎</span><span><b>Edit mode</b><br><span class="dim">Tap any chord (here or in Chart) to change it. Tap ✎ again to finish.</span></span>`;
+  } else if (S.selChord != null) {
     const ch = song.chords[S.selChord], c = ch.c;
-    const notes = c.pcs.map(p => pcName(song.key, p)).join(' · ');
+    const notes = chordNotes(c).join(' · ');
     el.innerHTML = `<span class="big">${c.name}</span><span><b>${c.rn}</b> <span class="dim">(${c.nash})</span><br><span class="tag fn-${c.fn}">${c.fn}</span></span><span class="dim">${notes}<br>bar ${Math.floor(ch.t / song.bpb) + 1} · ${ch.d / song.bpb} bar${ch.d === song.bpb ? '' : 's'}</span>`;
   } else if (S.sel != null) {
     const sec = song.sections[S.sel];
@@ -386,7 +390,10 @@ function updateChart(b, playing) {
 }
 $('#chartBody').addEventListener('click', e => {
   const h = e.target.closest('[data-csec]'); if (h) return openChords(S.song.sections[+h.dataset.csec]);
-  const el = e.target.closest('.bar'); if (el) { seek(+el.dataset.bar * S.song.bpb); S.lastBar = -2; } });
+  const el = e.target.closest('.bar'); if (!el) return;
+  if (S.edit) return editChordAt(S.song.chords.indexOf(S.song.chordAt(+el.dataset.bar * S.song.bpb)));
+  seek(+el.dataset.bar * S.song.bpb); S.lastBar = -2;
+});
 $('#chartMode').addEventListener('click', e => {
   const v = e.target.closest('button')?.dataset.v; if (!v) return;
   S.chartMode = v; $$('#chartMode button').forEach(b => b.classList.toggle('on', b.dataset.v === v));
@@ -492,7 +499,7 @@ function renderKey() {
       <div class="legend"><span><i style="background:var(--tonic)"></i>Tonic = home</span><span><i style="background:var(--sub)"></i>Subdominant = away</span><span><i style="background:var(--dom)"></i>Dominant = tension → home</span><span><i style="background:var(--colour)"></i>Borrowed / colour</span></div>
     </div>
     <div class="card"><h3>Chords used in this song</h3>
-      <div class="dchords">${songChords.map((c, i) => `<button class="dchord" data-sc="${song.chords.indexOf(c)}"><span class="rn">${c.c.rn}</span><span class="nm">${c.c.name}</span><span class="ns">${c.c.pcs.map(p => pcName(key, p)).join(' ')}</span></button>`).join('')}</div>
+      <div class="dchords">${songChords.map((c, i) => `<button class="dchord" data-sc="${song.chords.indexOf(c)}"><span class="rn">${c.c.rn}</span><span class="nm">${c.c.name}</span><span class="ns">${chordNotes(c.c).join(' ')}</span></button>`).join('')}</div>
     </div>
     <div class="card"><h3>Fretboard</h3>
       <div class="chips" style="margin-bottom:8px"><button data-fret="guitar" class="${S.fret === 'guitar' ? 'on' : ''}">Guitar</button><button data-fret="bass" class="${S.fret === 'bass' ? 'on' : ''}">Bass</button></div>
@@ -612,7 +619,17 @@ function rhythmPicker(cur, attr, defLabel) {
 let taps = [];
 $('#view-gen').addEventListener('click', e => {
   const r = e.target.closest('[data-rhy]');
-  if (r) { S.settings.rhythm = S.draft.rhythm = r.dataset.rhy || null; rebuild(); toast(`Chord rhythm: ${RHYTHMS[r.dataset.rhy]?.name || 'style default'}`); return; }
+  if (r) {
+    S.settings.rhythm = S.draft.rhythm = r.dataset.rhy || null; rebuild();
+    toast(`Chord rhythm: ${RHYTHMS[r.dataset.rhy]?.name || 'style default'}`);
+    // preview: 2 bars of the song's chords from the cursor, in the chosen rhythm
+    if (!engine.playing) {
+      const song = S.song, out = []; let i = song.chords.indexOf(song.chordAt(S.cursor)), sum = 0;
+      while (i < song.chords.length && sum < song.bpb * 2) { const c = song.chords[i++], beats = Math.min(c.d, song.bpb * 2 - sum); out.push({ v:c.v, beats }); sum += beats; }
+      playRhythm(out, r.dataset.rhy || STYLES[S.settings.style].comp);
+    }
+    return;
+  }
   const dl = e.target.closest('[data-dl]');
   if (dl) { const k = dl.dataset.dl; S.draft.layers = { ...S.draft.layers, [k]: !S.draft.layers?.[k] }; persist(); renderGen(); return; }
   const t = e.target.closest('[data-set],[data-act]'); if (!t) return;
@@ -694,12 +711,21 @@ function applyKind(x, kind) {
   const p = parseTok(S.song.key, x.t);
   x.q = kind === 'tri' ? p.q : kind === '7' ? seventhOf(S.song.key, p) : kind === 'add9' ? (p.q === 'min' ? 'madd9' : 'add9') : kind;
 }
-function openChords(sec) {
+function openChords(sec, sel = -1) {
   const s = S.settings, g = S.song.groups[sec.group], custom = S.song.custom[sec.group];
   const src = s.progs?.[sec.key] || g.map(c => ({ t:c.tok, q:c.q, l: custom ? c.len : S.song.slot }));
-  S.ce = { key:sec.key, type:sec.type, list:structuredClone(src), sel:-1 };
+  S.ce = { key:sec.key, type:sec.type, list:structuredClone(src), sel };
   S.modal = 'chords'; renderCE(); $('#modal').hidden = false;
 }
+// Edit mode: tap a chord block -> chord editor with that exact chord selected
+function editChordAt(i) {
+  const ch = S.song.chords[i]; if (!ch) return;
+  const sec = S.song.sections[ch.sec];
+  if (ch.pi == null) { toast('The final chord of the Outro is always the home chord'); return; }
+  openChords(sec, ch.pi);
+  previewChord(ch.v);
+}
+const rhythmOf = k => S.settings.rhythms?.[k] || S.settings.rhythm || STYLES[S.settings.style].comp;
 function commitCE() {
   const s = S.settings; s.progs = { ...(s.progs || {}) };
   if (S.ce.list.length) s.progs[S.ce.key] = structuredClone(S.ce.list); else delete s.progs[S.ce.key];
@@ -707,9 +733,14 @@ function commitCE() {
 }
 function renderCE() {
   const { list, sel, type, key: k } = S.ce, key = S.song.key;
-  const prev = sel >= 0 ? list[sel - 1] : list[list.length - 1];
-  const pc = prev && ceChord(prev);
-  const fit = !pc ? [0, 3, 4, 5] : pc.dia ? NEXT[pc.deg] : [0, 3, 4];
+  // the progression loops, so the chord before the first is the last one and vice versa
+  const n = list.length, at = i => list[((i % n) + n) % n];
+  const pc = n ? ceChord(sel >= 0 ? at(sel - 1) : at(n - 1)) : null;
+  const nc = n ? ceChord(sel >= 0 ? at(sel + 1) : at(0)) : null;
+  const after = i => !pc ? [0, 3, 4, 5].includes(i) : pc.dia ? NEXT[pc.deg].includes(i) : [0, 3, 4].includes(i);
+  const into = i => !!nc && nc.dia && (NEXT[i].includes(nc.deg) || (i === 0 && nc.deg !== 0));
+  const stars = i => (after(i) ? 1 : 0) + (into(i) ? 1 : 0);
+  const fit = [0, 1, 2, 3, 4, 5, 6].filter(i => stars(i) > 0);
   const dia = key.iv.map((_, i) => ceChord({ t:i + 1 }));
   const diaNames = new Set(dia.map(c => c.name));
   const colour = COLOUR_TOKS.map(t => ({ t, c: ceChord({ t }) })).filter(x => !diaNames.has(x.c.name));
@@ -728,24 +759,61 @@ function renderCE() {
       <div class="lbl">Type</div><div class="chips">${QK.map(([q, n]) => `<button class="${qKind(x.q) === q ? 'on' : ''}" data-ce-q="${q}">${n}</button>`).join('')}</div>
       <div class="chips" style="margin-top:10px"><button data-ce-mv="-1">◀ Move</button><button data-ce-mv="1">Move ▶</button><button data-ce-del>✕ Remove</button></div>
     </div>` : ''}
-    <div class="lbl">${x ? `Tap to replace ${ceChord(x).name}` : 'Tap to add'} · <span style="color:var(--accent)">★ fits well after ${pc ? pc.name : 'the start'}</span></div>
-    <div class="dchords">${dia.map((c, i) => `<button class="dchord ${fit.includes(i) ? 'fit' : ''}" data-ce-add="${i + 1}"><span class="rn">${c.rn}${fit.includes(i) ? ' ★' : ''}</span><span class="nm">${c.name}</span><span class="tag fn-${c.fn}" style="align-self:flex-start">${c.fn}</span></button>`).join('')}</div>
+    <div class="lbl">${x ? `Tap to replace ${ceChord(x).name}` : 'Tap to add'}${pc ? ` · between <b>${pc.name}</b> → ? → <b>${nc.name}</b>` : ''}</div>
+    <div class="lbl" style="font-weight:400;margin-top:0"><span style="color:var(--accent)">★★ fits both sides · ★ fits one side</span></div>
+    <div class="dchords">${dia.map((c, i) => `<button class="dchord ${stars(i) === 2 ? 'fit best' : stars(i) ? 'fit' : ''}" data-ce-add="${i + 1}"><span class="rn">${c.rn} ${'★'.repeat(stars(i))}</span><span class="nm">${c.name}</span><span class="tag fn-${c.fn}" style="align-self:flex-start">${c.fn}</span></button>`).join('')}</div>
     <div class="lbl">Colour chords (borrowed — use for surprise)</div>
     <div class="dchords">${colour.map(({ t, c }) => `<button class="dchord" data-ce-add="${t}"><span class="rn">${c.rn}</span><span class="nm">${c.name}</span></button>`).join('')}</div>
     <div class="opts" style="grid-template-columns:1fr 1fr 1fr;margin-top:14px">
       <button class="opt" data-ce-play>▶ Hear</button><button class="opt" data-ce-reset>↺ Generated</button><button class="opt on" data-modal-close>Done</button></div>`;
 }
-let ceTimers = [];
-function stopCE() { ceTimers.forEach(clearTimeout); ceTimers = []; }
-function playCE() {
-  stopCE();
-  let t = 0, prev = null; const spb = 60 / S.settings.bpm, bpb = S.song.bpb, inst = engine.tracks.keys.inst === 'dist' ? 'guitar' : engine.tracks.keys.inst;
-  S.ce.list.forEach((x, i) => {
-    const v = voiceChord(ceChord(x), prev); prev = v; const d = x.l * bpb * spb;
-    ceTimers.push(setTimeout(() => { if (S.modal !== 'chords') return; S.ce.sel = i; renderCE(); engine.preview(v, inst, d * .95); }, t * 1000));
-    t += d;
+// ---- previews played in a chord rhythm (own gain node so they can be stopped)
+let ceTimers = [], pv = null;
+const ARP = [0, 1, 2, 3, 2, 1, 2, 3];
+function stopCE() {
+  ceTimers.forEach(clearTimeout); ceTimers = [];
+  if (pv) { const g = pv; pv = null; try { g.gain.setTargetAtTime(0, engine.ctx.currentTime, .03); setTimeout(() => g.disconnect(), 300); } catch {} }
+  $$('.cchip.playing').forEach(c => c.classList.remove('playing'));
+}
+// entries: [{ v: voiced notes, beats }]
+function playRhythm(entries, rid, onChord) {
+  engine.ensure(); stopCE();
+  const ctx = engine.ctx; pv = ctx.createGain(); pv.connect(engine.bus.keys);
+  const out = pv, bpb = S.song.bpb, spb = 60 / S.settings.bpm, t0 = ctx.currentTime + .06;
+  const inst = engine.tracks.keys.inst === 'dist' ? 'guitar' : engine.tracks.keys.inst, pat = rhythmPattern(rid, bpb);
+  let acc = 0; const segs = entries.map(e => { const s = { ...e, s:acc }; acc += e.beats; return s; }); const total = acc;
+  const segAt = b => segs.find(x => b >= x.s - 1e-6 && b < x.s + x.beats - 1e-6);
+  const hit = (b, d, notes, v) => notes.forEach((m, i) => engine.voice(inst, m, t0 + b * spb + (inst === 'guitar' && notes.length > 1 ? i * .014 : 0), d * spb, v / (notes.length > 1 ? 1.6 : 1), out));
+  for (let bar = 0; bar < total - 1e-6; bar += bpb) {
+    if (pat === 'arp') {
+      const c0 = segAt(bar); if (c0) hit(bar, Math.min(bpb, total - bar), [c0.v[0] - 12], .7);
+      for (let i = 0; i < bpb * 2; i++) { const b = bar + i * .5; if (b >= total - 1e-6) break; const e = segAt(b), tones = [...e.v, e.v[0] + 12]; hit(b, .9, [tones[ARP[i % 8] % tones.length]], i % 2 ? .5 : .65); }
+      continue;
+    }
+    for (const [s, d, v] of pat) {
+      let cur = bar + s; const end = Math.min(bar + s + d, total);
+      while (cur < end - 1e-6) { const e = segAt(cur); if (!e) break; const ee = Math.min(end, e.s + e.beats); hit(cur, ee - cur, e.v, v ?? .8); cur = ee; }
+    }
+  }
+  if (onChord) {
+    segs.forEach((e, i) => ceTimers.push(setTimeout(() => onChord(i), (e.s * spb + .06) * 1000)));
+    ceTimers.push(setTimeout(() => onChord(-1), (total * spb + .1) * 1000));
+  }
+}
+function ceEntries(maxBeats = Infinity) {
+  const bpb = S.song.bpb; let prev = null, sum = 0; const out = [];
+  for (const x of S.ce.list) {
+    if (sum >= maxBeats) break;
+    const v = voiceChord(ceChord(x), prev); prev = v;
+    const beats = Math.min(x.l * bpb, maxBeats - sum); out.push({ v, beats }); sum += beats;
+  }
+  return out;
+}
+function playCE(maxBeats) {
+  playRhythm(ceEntries(maxBeats), rhythmOf(S.ce.key), i => {
+    if (S.modal !== 'chords') return;
+    $$('.cchip[data-ce-sel]').forEach(c => c.classList.toggle('playing', +c.dataset.ceSel === i));
   });
-  ceTimers.push(setTimeout(() => { if (S.modal === 'chords') { S.ce.sel = -1; renderCE(); } }, t * 1000));
 }
 $('#modalBody').addEventListener('click', e => {
   if (S.modal !== 'chords') return;
@@ -756,7 +824,7 @@ $('#modalBody').addEventListener('click', e => {
   if (d.ceRhy !== undefined) {
     S.settings.rhythms = { ...(S.settings.rhythms || {}) };
     if (d.ceRhy) S.settings.rhythms[ce.key] = d.ceRhy; else delete S.settings.rhythms[ce.key];
-    ce.rhyOpen = true; rebuild(); renderCE(); return;
+    ce.rhyOpen = true; rebuild(); renderCE(); playCE(S.song.bpb * 2); return;
   }
   if (d.ceAdd) {
     const t = /^\d$/.test(d.ceAdd) ? +d.ceAdd : d.ceAdd, p = parseTok(S.song.key, t);
@@ -870,6 +938,12 @@ $('#btnPlay').addEventListener('click', () => engine.playing ? pause() : play())
 $('#btnRew').addEventListener('click', () => { S.cursor = engine.loop ? engine.loop[0] : 0; if (engine.playing) play(S.cursor); S.dirty = true; S.lastBar = -2; $('#arrScroll').scrollLeft = S.cursor * S.zoom - 20; });
 $('#btnLoop').addEventListener('click', toggleLoop);
 $('#btnClick').addEventListener('click', toggleClick);
+$('#btnEdit').addEventListener('click', () => {
+  S.edit = !S.edit; $('#btnEdit').classList.toggle('on', S.edit);
+  document.body.classList.toggle('editing', S.edit);
+  toast(S.edit ? 'Edit mode: tap a chord to change it' : 'Edit mode off');
+  renderInfo(); S.dirty = true;
+});
 $('#btnFollow').addEventListener('click', e => { S.follow = !S.follow; e.currentTarget.classList.toggle('on', S.follow); });
 $('#zoomIn').addEventListener('click', () => setZoom(S.zoom * 1.35));
 $('#zoomOut').addEventListener('click', () => setZoom(S.zoom / 1.35));

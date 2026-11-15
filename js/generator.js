@@ -177,18 +177,15 @@ export function generate(s) {
   const slot = style.form === 'blues' ? 1 : ({ slow:2, normal:1, fast:.5 }[s.hr] || 1);
 
   const chords = [];
-  const put = (sec, t, d, c) => {
-    const last = chords[chords.length - 1];
-    if (last && last.sec === sec.i && last.c.name === c.name && Math.abs(last.t + last.d - t) < 1e-6) last.d += d;
-    else chords.push({ t, d, c, sec: sec.i });
-  };
+  // one block per progression slot; `pi` = index in the section's progression (null = fixed ending chord)
+  const put = (sec, t, d, c, pi) => chords.push({ t, d, c, sec: sec.i, pi });
   for (const sec of sections) {
     const prog = groups[sec.group];
     if (custom[sec.group]) {
       let t = 0, j = 0;
       while (t < sec.len - 1e-6) {
         const c = prog[j % prog.length], d = Math.min(c.len * bpb, sec.len - t);
-        put(sec, sec.start + t, d, c); t += d; j++;
+        put(sec, sec.start + t, d, c, j % prog.length); t += d; j++;
       }
       continue;
     }
@@ -197,8 +194,8 @@ export function generate(s) {
     while (cd > bpb && prog.length * cd > sec.len) cd /= 2;
     const n = Math.max(1, Math.round(sec.len / cd));
     for (let j = 0; j < n; j++) {
-      const c = (sec.type === 'Outro' && j === n - 1) ? tonicChord : prog[j % prog.length];
-      put(sec, sec.start + j * cd, cd, c);
+      const end = sec.type === 'Outro' && j === n - 1;
+      put(sec, sec.start + j * cd, cd, end ? tonicChord : prog[j % prog.length], end ? null : j % prog.length);
     }
   }
   let prevV = null;
