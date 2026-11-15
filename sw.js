@@ -1,5 +1,5 @@
 // Offline cache (app shell). Network-first (bypassing the HTTP cache) so updates show up; cache when offline.
-const VERSION = 'bandmate-v3';
+const VERSION = 'bandmate-v4';
 const FILES = ['./', 'index.html', 'css/style.css', 'js/app.js', 'js/audio.js', 'js/generator.js', 'js/theory.js', 'js/midi.js',
   'manifest.webmanifest', 'icon.svg', 'icon-192.png', 'icon-512.png'];
 

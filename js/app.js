@@ -775,6 +775,37 @@ $('#modalBody').addEventListener('click', e => {
   commitCE(); renderCE();
 });
 
+// ---------------------------------------------------------------- TEMPO panel
+function openTempo() { S.modal = 'tempo'; renderTempo(); $('#modal').hidden = false; }
+function renderTempo() {
+  const bpm = S.settings.bpm, st = STYLES[S.settings.style], secs = Math.round(S.song.totalBeats / bpm * 60);
+  $('#modalTitle').textContent = 'Tempo';
+  $('#modalBody').innerHTML = `
+    <div class="tempo-big"><span id="tpVal">${bpm}</span> <small>bpm</small></div>
+    <div class="tempo-steps">${[-5, -1, 1, 5].map(d => `<button data-tp="${d}">${d > 0 ? '+' : '−'}${Math.abs(d)}</button>`).join('')}</div>
+    <input type="range" min="40" max="220" value="${bpm}" id="tpSlider">
+    <button class="tapbtn" data-tap>👆 Tap the beat</button>
+    <div class="lbl" style="font-weight:400" id="tpInfo">Song length ${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')} · ${st.name} usually ${st.bpm.join('–')} bpm. Changes apply instantly, even while playing.</div>
+    <button class="bigbtn" data-modal-close>Done</button>`;
+}
+let tpTaps = [];
+$('#modalBody').addEventListener('click', e => {
+  if (S.modal !== 'tempo') return;
+  const b = e.target.closest('button'); if (!b) return;
+  if (b.dataset.tp) setTempo(S.settings.bpm + +b.dataset.tp);
+  else if (b.dataset.tap !== undefined) {
+    const now = performance.now(); tpTaps = tpTaps.filter(x => now - x < 2500); tpTaps.push(now);
+    if (tpTaps.length >= 2) setTempo(Math.round(60000 * (tpTaps.length - 1) / (tpTaps[tpTaps.length - 1] - tpTaps[0])));
+    b.textContent = `👆 Tap the beat (${tpTaps.length})`;
+  } else return;
+  syncTempoPanel();
+});
+$('#modalBody').addEventListener('input', e => { if (S.modal === 'tempo' && e.target.id === 'tpSlider') { setTempo(+e.target.value); syncTempoPanel(); } });
+function syncTempoPanel() {
+  const v = $('#tpVal'), s = $('#tpSlider'); if (v) v.textContent = S.settings.bpm; if (s && +s.value !== S.settings.bpm) s.value = S.settings.bpm;
+}
+$('#btnTempo').addEventListener('click', openTempo);
+
 // ---------------------------------------------------------------- library / export / misc
 function openModal(title, html) { S.modal = 'lib'; $('#modalTitle').textContent = title; $('#modalBody').innerHTML = html; $('#modal').hidden = false; }
 function closeModal() { $('#modal').hidden = true; S.modal = null; stopCE(); }
