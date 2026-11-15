@@ -1,4 +1,4 @@
-import { generate, STYLES, randomName, SEC_COLOR } from './generator.js';
+import { generate, STYLES, randomName, SEC_COLOR, RHYTHMS, rhythmPattern } from './generator.js';
 import { parseTok, makeChord, seventhOf } from './theory.js';
 import { Engine, INSTRUMENTS, lowerBound } from './audio.js';
 import { songToMidi } from './midi.js';
@@ -14,7 +14,24 @@ const engine = new Engine();
 const COL = { keys:'#ffd43b', melody:'#4dabf7', bass:'#69db7c', drums:'#ff8787' };
 const FNCOL = { Tonic:'#4dabf7', Subdominant:'#69db7c', Dominant:'#ff922b', Colour:'#b197fc' };
 const TRACKS = [['keys','Chords'], ['melody','Melody'], ['bass','Bass'], ['drums','Drums']];
-const DEFAULTS = { tonic:0, mode:'major', style:'pop', bpm:110, bpb:4, length:'medium', complexity:'normal', hr:'normal', autoTempo:true };
+const DEFAULTS = { tonic:0, mode:'major', style:'pop', bpm:110, bpb:4, length:'medium', complexity:'normal', hr:'normal', autoTempo:true,
+  layers:{ melody:false, bass:false, drums:false }, rhythm:null };
+const LAYER_NAME = { melody:'Melody', bass:'Bass', drums:'Drums' };
+const layerOn = tr => tr === 'keys' || !!S.song?.layers[tr];
+function setLayer(tr, on) {
+  S.settings.layers = { ...S.song.layers, [tr]: on };
+  rebuild(); renderMix();
+  toast(`${LAYER_NAME[tr]} ${on ? 'added' : 'removed'}`);
+}
+// mini picture of a rhythm: one bar, filled blocks where the chord sounds
+function rhythmSVG(id, bpb) {
+  const p = rhythmPattern(id, bpb), W = 64, H = 14, u = W / bpb;
+  let s = `<svg class="rsvg" viewBox="0 0 ${W} ${H}">`;
+  for (let b = 0; b < bpb; b++) s += `<rect x="${b * u}" y="0" width="${u - 1}" height="${H}" fill="#232833"/>`;
+  if (p === 'arp') for (let i = 0; i < bpb * 2; i++) { const y = [9, 6, 3, 0, 3, 6][i % 6]; s += `<rect x="${i * u / 2 + 1}" y="${y}" width="${u / 2 - 2}" height="5" rx="1" fill="#ffd43b"/>`; }
+  else for (const [st, d, v] of p) s += `<rect x="${st * u + .5}" y="2" width="${Math.max(2, d * u - 1.5)}" height="${H - 4}" rx="2" fill="#ffd43b" opacity="${.45 + .55 * (v ?? .8)}"/>`;
+  return s + '</svg>';
+}
 
 const S = {
   settings:null, name:'', id:null, song:null, view:'arrange', zoom:22, follow:true,
@@ -28,7 +45,8 @@ function newSong() {
   const seed = (Math.random() * 2 ** 32) >>> 0;
   const st = STYLES[d.style];
   const bpm = d.autoTempo ? Math.round(st.bpm[0] + Math.random() * (st.bpm[1] - st.bpm[0])) : S.settings?.bpm || d.bpm;
-  S.settings = { tonic:d.tonic, mode:d.mode, style:d.style, bpm, bpb:d.bpb, length:d.length, complexity:d.complexity, hr:d.hr, seed, seeds:{} };
+  S.settings = { tonic:d.tonic, mode:d.mode, style:d.style, bpm, bpb:d.bpb, length:d.length, complexity:d.complexity, hr:d.hr, seed, seeds:{},
+    layers:{ ...DEFAULTS.layers, ...(d.layers || {}) }, rhythm:d.rhythm || null };
   S.name = randomName(seed); S.id = null; S.sel = null; S.selChord = null; S.cursor = 0; S.loopOn = false;
   for (const [k, v] of Object.entries(st.inst)) engine.tracks[k].inst = v;
   saveMix();
@@ -48,7 +66,7 @@ function rebuild() {
   if (S.selChord != null && S.selChord >= song.chords.length) S.selChord = null;
   S.cursor = Math.min(S.cursor, song.totalBeats - song.bpb);
   updateLoop();
-  layoutArr(); renderSecTools(); renderInfo(); renderChart(); renderKey(); renderGen(); updateLCD(S.cursor, false);
+  renderHeads(); layoutArr(); renderSecTools(); renderInfo(); renderChart(); renderKey(); renderGen(); updateLCD(S.cursor, false);
   $('#songName').textContent = S.name;
   persist();
 }
@@ -135,7 +153,9 @@ const A = { cv:$('#arrCanvas'), W:0, H:0, dpr:1, lanes:[] };
 function renderHeads() {
   const ms = k => `<div class="ms"><button class="m ${engine.tracks[k].mute ? 'on' : ''}" data-mute="${k}">M</button><button class="s ${engine.tracks[k].solo ? 'on' : ''}" data-solo="${k}">S</button></div>`;
   $('#arrHeads').innerHTML = `<div class="head ruler">BARS</div>` +
-    TRACKS.map(([k, n]) => `<div class="head"><div class="nm"><i style="background:${COL[k]}"></i>${n}</div>${ms(k)}</div>`).join('');
+    TRACKS.map(([k, n]) => layerOn(k)
+      ? `<div class="head"><div class="nm"><i style="background:${COL[k]}"></i>${n}</div>${ms(k)}</div>`
+      : `<div class="head off"><button class="addl" data-layer="${k}" style="--lc:${COL[k]}">+ ${n}</button></div>`).join('');
   layoutHeads();
 }
 function layoutHeads() { $$('#arrHeads .head').forEach((el, i) => { if (A.lanes[i]) el.style.height = A.lanes[i].h + 'px'; }); }
@@ -147,8 +167,10 @@ function layoutArr() {
   A.cv.style.width = W + 'px'; A.cv.style.height = H + 'px';
   A.W = W; A.H = H;
   $('#arrInner').style.width = Math.max(W, S.song.totalBeats * S.zoom + 80) + 'px';
-  const rem = Math.max(70, H - 30 - 46 - 58), mel = Math.min(130, Math.round(rem * .58)), bass = Math.min(90, rem - mel);
-  A.lanes = [{ id:'ruler', h:30 }, { id:'keys', h:46 }, { id:'melody', h:mel }, { id:'bass', h:bass }, { id:'drums', h:58 }];
+  const OFF = 34, dr = layerOn('drums') ? 58 : OFF;
+  const rem = Math.max(70, H - 30 - 46 - dr), mel = layerOn('melody') ? Math.min(130, Math.round(rem * .58)) : OFF, bass = layerOn('bass') ? Math.min(90, rem - mel) : OFF;
+  const anyNotes = layerOn('melody') || layerOn('bass') || layerOn('drums');
+  A.lanes = [{ id:'ruler', h:30 }, { id:'keys', h: anyNotes ? 46 : 64 }, { id:'melody', h:mel }, { id:'bass', h:bass }, { id:'drums', h:dr }];
   let y = 0; for (const l of A.lanes) { l.y = y; y += l.h; }
   layoutHeads();
   S.dirty = true;
@@ -230,7 +252,14 @@ function drawArr(b, playing) {
   g.globalAlpha = 1;
   // muted lanes
   const anySolo = TRACKS.some(([k]) => engine.tracks[k].solo);
-  TRACKS.forEach(([k], i) => { const t = engine.tracks[k]; if (t.mute || (anySolo && !t.solo)) { g.fillStyle = 'rgba(12,13,17,.6)'; g.fillRect(0, lanes[i + 1].y, W, lanes[i + 1].h); } });
+  TRACKS.forEach(([k, n], i) => {
+    const t = engine.tracks[k], l = lanes[i + 1];
+    if (!layerOn(k)) {
+      g.fillStyle = '#0f1115'; g.fillRect(0, l.y, W, l.h - 1);
+      g.fillStyle = '#4a5160'; g.font = '600 11px system-ui, sans-serif'; g.textBaseline = 'middle';
+      g.fillText(`No ${n.toLowerCase()} yet — tap here or “+ ${n}” to add it`, 10, l.y + l.h / 2);
+    } else if (t.mute || (anySolo && !t.solo)) { g.fillStyle = 'rgba(12,13,17,.6)'; g.fillRect(0, l.y, W, l.h); }
+  });
   // empty space below the last lane
   const lb = D.y + D.h; if (lb < H) { g.fillStyle = '#0e1014'; g.fillRect(0, lb, W, H - lb); }
   // end marker
@@ -257,6 +286,7 @@ A.cv.addEventListener('click', e => {
   if (beat >= song.totalBeats) return;
   const lane = A.lanes.find(l => y >= l.y && y < l.y + l.h); if (!lane) return;
   const ch = song.chordAt(beat);
+  if (LAYER_NAME[lane.id] && !layerOn(lane.id)) return setLayer(lane.id, true);
   if (lane.id === 'ruler') { S.sel = ch.sec; S.selChord = null; seek(beat); }
   else if (lane.id === 'keys') {
     const i = song.chords.indexOf(ch);
@@ -450,7 +480,7 @@ function renderKey() {
         <span>Relative</span><span>${rel}</span>
         <span>Parallel</span><span>${par}</span>
         <span>Formula</span><span class="mono">${steps}</span>
-        <span>Melody range</span><span>${noteName(key, mlo)} – ${noteName(key, mhi)} (${mhi - mlo} semitones)</span>
+        ${song.byTrack.melody.length ? `<span>Melody range</span><span>${noteName(key, mlo)} – ${noteName(key, mhi)} (${mhi - mlo} semitones)</span>` : ''}
       </div>
     </div>
     <div class="card"><h3>Scale</h3>
@@ -491,7 +521,9 @@ function transpose(n) {
 function renderMix() {
   const strip = (k, name, insts) => {
     const t = engine.tracks[k];
-    return `<div class="strip"><div class="nm"><i style="background:${COL[k] || '#adb5bd'}"></i>${name}</div>
+    if (LAYER_NAME[k] && !layerOn(k)) return `<div class="strip"><div class="nm"><i style="background:${COL[k]}"></i>${name} <small style="color:var(--faint)">not in song</small></div>
+      <div class="ctl"><button class="pill" data-layer="${k}">+ Add layer</button></div></div>`;
+    return `<div class="strip"><div class="nm"><i style="background:${COL[k] || '#adb5bd'}"></i>${name}${LAYER_NAME[k] ? ` <button class="pill sm" data-layer="${k}" title="Remove this layer">✕</button>` : ''}</div>
       <div class="ctl">${insts ? `<select data-inst="${k}">${Object.entries(insts).map(([v, n]) => `<option value="${v}" ${t.inst === v ? 'selected' : ''}>${n}</option>`).join('')}</select>` : ''}
       <span class="ms"><button class="m ${t.mute ? 'on' : ''}" data-mute="${k}">M</button>${k !== 'click' ? `<button class="s ${t.solo ? 'on' : ''}" data-solo="${k}">S</button>` : ''}</span></div>
       <input type="range" min="0" max="1" step="0.01" value="${t.vol}" data-vol="${k}"></div>`;
@@ -509,6 +541,8 @@ function renderMix() {
   renderHeads();
 }
 document.addEventListener('click', e => {
+  const ly = e.target.closest('[data-layer]');
+  if (ly) return setLayer(ly.dataset.layer, !layerOn(ly.dataset.layer));
   const m = e.target.closest('[data-mute]'), s = e.target.closest('[data-solo]');
   if (m) { const t = engine.tracks[m.dataset.mute]; t.mute = !t.mute; }
   else if (s) { const t = engine.tracks[s.dataset.solo]; t.solo = !t.solo; }
@@ -559,11 +593,28 @@ function renderGen() {
       <div class="lbl">Harmony</div><div class="opts">${opt('complexity', 'simple', 'Triads')}${opt('complexity', 'normal', 'Normal')}${opt('complexity', 'rich', 'Rich / 7ths')}</div>
       <div class="lbl">Chord changes</div><div class="opts">${opt('hr', 'slow', 'Every 2 bars')}${opt('hr', 'normal', 'Every bar')}${opt('hr', 'fast', 'Twice a bar')}</div>
     </div>
+    <div class="card"><h3>Chord rhythm <small style="text-transform:none;letter-spacing:0">· current song, live</small></h3>
+      ${rhythmPicker(S.settings.rhythm, 'data-rhy', `Style (${RHYTHMS[STYLES[S.settings.style].comp].name})`)}
+      <div class="lbl" style="font-weight:400">Each section can have its own rhythm: ✎ Chords on a section.</div>
+    </div>
+    <div class="card"><h3>Layers in new songs</h3>
+      <div class="opts"><button class="opt on" disabled>Chords</button>${['melody', 'bass', 'drums'].map(k => `<button class="opt ${d.layers?.[k] ? 'on' : ''}" data-dl="${k}">${LAYER_NAME[k]}</button>`).join('')}</div>
+      <div class="lbl" style="font-weight:400">Add or remove layers on the current song any time in Arrange (+ buttons) or the Mixer.</div>
+    </div>
     <button class="bigbtn" data-act="generate">✦ Generate song</button>
     <div class="lbl" style="font-weight:400;text-align:center">Tip: in Arrange, tap a section on the ruler to re-roll only its chords or melody.<br>Use Key → − / + to transpose without changing the song.</div>`;
 }
+function rhythmPicker(cur, attr, defLabel) {
+  const bpb = S.song.bpb;
+  return `<div class="rgrid"><button class="ropt ${!cur ? 'on' : ''}" ${attr}=""><span>${defLabel}</span></button>` +
+    Object.entries(RHYTHMS).map(([id, r]) => `<button class="ropt ${cur === id ? 'on' : ''}" ${attr}="${id}"><span>${r.name}</span>${rhythmSVG(id, bpb)}</button>`).join('') + '</div>';
+}
 let taps = [];
 $('#view-gen').addEventListener('click', e => {
+  const r = e.target.closest('[data-rhy]');
+  if (r) { S.settings.rhythm = S.draft.rhythm = r.dataset.rhy || null; rebuild(); toast(`Chord rhythm: ${RHYTHMS[r.dataset.rhy]?.name || 'style default'}`); return; }
+  const dl = e.target.closest('[data-dl]');
+  if (dl) { const k = dl.dataset.dl; S.draft.layers = { ...S.draft.layers, [k]: !S.draft.layers?.[k] }; persist(); renderGen(); return; }
   const t = e.target.closest('[data-set],[data-act]'); if (!t) return;
   const d = S.draft;
   if (t.dataset.set) { const k = t.dataset.set; d[k] = ['tonic', 'bpb'].includes(k) ? +t.dataset.v : t.dataset.v; persist(); renderGen(); return; }
@@ -670,6 +721,8 @@ function renderCE() {
     <div class="prog">${list.map((e, i) => { const c = ceChord(e); return `<button class="cchip ${i === sel ? 'on' : ''}" data-ce-sel="${i}" style="--fc:${FNCOL[c.fn]}"><b>${c.name}</b><small>${c.rn} · ${lenLabel(e.l)}</small></button>`; }).join('')}
       <button class="cchip add ${sel < 0 ? 'on' : ''}" data-ce-sel="-1"><b>＋</b><small>add</small></button></div>
     <div class="lbl" style="font-weight:400">${total} bar${total === 1 ? '' : 's'}, repeats to fill the ${type} (${secLens.join(' / ') || '?'} bars).</div>
+    <details class="rdet" ${S.ce.rhyOpen ? 'open' : ''}><summary>Rhythm for ${type}: <b>${RHYTHMS[S.settings.rhythms?.[k]]?.name || 'song default'}</b></summary>
+      ${rhythmPicker(S.settings.rhythms?.[k], 'data-ce-rhy', 'Song default')}</details>
     ${x ? `<div class="card ce-ctl">
       <div class="lbl">Length</div><div class="chips">${LENS.map(l => `<button class="${x.l === l ? 'on' : ''}" data-ce-len="${l}">${lenLabel(l)}</button>`).join('')}</div>
       <div class="lbl">Type</div><div class="chips">${QK.map(([q, n]) => `<button class="${qKind(x.q) === q ? 'on' : ''}" data-ce-q="${q}">${n}</button>`).join('')}</div>
@@ -700,6 +753,11 @@ $('#modalBody').addEventListener('click', e => {
   const d = b.dataset, ce = S.ce, L = ce.list;
   if (d.ceSel !== undefined) { ce.sel = +d.ceSel; if (ce.sel >= 0) previewChord(voiceChord(ceChord(L[ce.sel]), null)); renderCE(); return; }
   if (d.cePlay !== undefined) return playCE();
+  if (d.ceRhy !== undefined) {
+    S.settings.rhythms = { ...(S.settings.rhythms || {}) };
+    if (d.ceRhy) S.settings.rhythms[ce.key] = d.ceRhy; else delete S.settings.rhythms[ce.key];
+    ce.rhyOpen = true; rebuild(); renderCE(); return;
+  }
   if (d.ceAdd) {
     const t = /^\d$/.test(d.ceAdd) ? +d.ceAdd : d.ceAdd, p = parseTok(S.song.key, t);
     if (ce.sel >= 0) { L[ce.sel] = { t, q:p.q, l:L[ce.sel].l }; }

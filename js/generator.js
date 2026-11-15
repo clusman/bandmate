@@ -27,11 +27,11 @@ export function hash(str) {
 }
 
 export const STYLES = {
-  pop: { name:'Pop', bpm:[96,122], comp:'pop', bass:'pop', drums:'pop', ext:.2, density:.55,
+  pop: { name:'Pop', bpm:[96,122], comp:'push', bass:'pop', drums:'pop', ext:.2, density:.55,
     inst:{ keys:'epiano', melody:'lead', bass:'finger' },
     progs:{ verse:[[1,5,6,4],[6,4,1,5],[1,6,4,5],[1,4,6,5],[1,3,6,4]], pre:[[4,5],[2,4,5,5],[6,5,4,5]],
       chorus:[[4,1,5,6],[1,5,6,4],[6,4,1,5],[4,5,6,1]], bridge:[[6,4,1,5],[2,4,6,5],[4,4,5,5]] } },
-  rock: { name:'Rock', bpm:[110,146], comp:'rock', bass:'eighths', drums:'rock', ext:0, density:.5,
+  rock: { name:'Rock', bpm:[110,146], comp:'eighth', bass:'eighths', drums:'rock', ext:0, density:.5,
     inst:{ keys:'dist', melody:'lead', bass:'synth' },
     progs:{ verse:[[1,'bVII','IV',1],[1,1,4,4],[6,4,1,5],[1,5,4,4]], pre:[[4,5],[6,5],['bVI','bVII']],
       chorus:[[4,5,1,1],[1,5,6,4],[1,'bVII','IV','IV'],[4,1,5,5]], bridge:[[6,5,4,4],['bVI','bVII',1,1],[4,4,6,5]] } },
@@ -47,7 +47,7 @@ export const STYLES = {
     inst:{ keys:'organ', melody:'lead', bass:'finger' },
     progs:{ verse:[[1,1,1,1,4,4,1,1,5,4,1,5],[1,4,1,1,4,4,1,1,5,4,1,5],[1,4,1,1,4,4,1,6,2,5,1,5]],
       intro:[[5,4,1,5]], outro:[[5,4,1,1]] } },
-  edm: { name:'Synth-pop', bpm:[116,128], comp:'sustain', bass:'offbeat', drums:'edm', ext:.15, density:.6,
+  edm: { name:'Synth-pop', bpm:[116,128], comp:'whole', bass:'offbeat', drums:'edm', ext:.15, density:.6,
     inst:{ keys:'pad', melody:'lead', bass:'synth' },
     progs:{ verse:[[6,4,1,5],[1,5,6,4],[6,6,4,5]], pre:[[4,5],[4,4,5,5]],
       chorus:[[6,4,1,5],[4,5,6,6],[4,1,5,6]], bridge:[[4,4,6,6],[2,2,5,5]] } },
@@ -77,15 +77,25 @@ function groupOf(type, style, s) {
   return { intro:'chorus', outro:'chorus', solo:'verse', pre:'verse', chorus:'verse', bridge:'verse' }[k] || 'verse';
 }
 
-const COMP = {
-  pop:     [[0,1.5,.9],[1.5,1,.7],[2.5,1.5,.8]],
-  rock:    [0,.5,1,1.5,2,2.5,3,3.5].map((s, i) => [s, .45, i % 2 ? .6 : .9]),
-  funk:    [[0,.25,1],[.75,.25,.7],[1.5,.25,.8],[2.25,.25,.7],[2.5,.5,.9],[3.5,.25,.7]],
-  sustain: [[0,4,.8]],
-  shuffle: [[0,1.5,.85],[1.5,.5,.6],[2,1.5,.8],[3.5,.5,.6]],
-  strum:   [[0,1,.9],[1,.5,.6],[1.5,1,.8],[2.5,.5,.6],[3,.5,.8],[3.5,.5,.6]],
+// Chord rhythms: [start beat, length, velocity] within one 4/4 bar (3/4 uses `w3` or a clipped copy).
+export const RHYTHMS = {
+  whole:   { name:'Whole',        p:[[0,4,.8]], w3:[[0,3,.8]] },
+  half:    { name:'Halves',       p:[[0,2,.85],[2,2,.75]], w3:[[0,2,.85],[2,1,.7]] },
+  quarter: { name:'Quarters',     p:[[0,.9,.9],[1,.9,.7],[2,.9,.8],[3,.9,.7]] },
+  eighth:  { name:'Eighths',      p:[0,.5,1,1.5,2,2.5,3,3.5].map((s, i) => [s, .45, i % 2 ? .6 : .9]) },
+  push:    { name:'Pop push',     p:[[0,1.5,.9],[1.5,1,.7],[2.5,1.5,.8]], w3:[[0,1,.85],[1,.9,.6],[2,.9,.6]] },
+  tresillo:{ name:'3+3+2',        p:[[0,1.5,.9],[1.5,1.5,.75],[3,1,.8]] },
+  strum:   { name:'Strum',        p:[[0,1,.9],[1,.5,.6],[1.5,1,.8],[2.5,.5,.6],[3,.5,.8],[3.5,.5,.6]], w3:[[0,1,.9],[1,.5,.6],[1.5,.5,.7],[2,.5,.6],[2.5,.5,.6]] },
+  offbeat: { name:'Off-beat',     p:[[.5,.4,.8],[1.5,.4,.8],[2.5,.4,.8],[3.5,.4,.8]] },
+  funk:    { name:'Funk stabs',   p:[[0,.25,1],[.75,.25,.7],[1.5,.25,.8],[2.25,.25,.7],[2.5,.5,.9],[3.5,.25,.7]] },
+  shuffle: { name:'Shuffle',      p:[[0,1.5,.85],[1.5,.5,.6],[2,1.5,.8],[3.5,.5,.6]], w3:[[0,1,.85],[1,.9,.6],[2,.9,.6]] },
+  arp:     { name:'Arpeggio',     p:'arp' },
 };
-const COMP3 = { sustain:[[0,3,.8]], default:[[0,1,.85],[1,.9,.6],[2,.9,.6]] };
+export function rhythmPattern(id, bpb) {
+  const r = RHYTHMS[id] || RHYTHMS.whole;
+  if (r.p === 'arp' || bpb === 4) return r.p;
+  return r.w3 || r.p.filter(x => x[0] < bpb).map(([s, d, v]) => [s, Math.min(d, bpb - s), v]);
+}
 const BASS = {
   pop:     [[0,1.5,'R'],[1.5,.5,'R'],[2,1,'5'],[3,.5,'8'],[3.5,.5,'A']],
   eighths: [0,.5,1,1.5,2,2.5,3,3.5].map(s => [s,.5,'R']),
@@ -200,15 +210,16 @@ export function generate(s) {
   const sw = t => { if (!swing) return t; const b = Math.floor(t + 1e-9); return Math.abs(t - b - .5) < 1e-6 ? b + swing : t; };
 
   // ---- Keys / comping
-  const pat = bpb === 3 ? (COMP3[style.comp] || COMP3.default) : COMP[style.comp];
   for (const sec of sections) {
     const sv = SEC_VEL[sec.type];
+    sec.rhythm = s.rhythms?.[sec.key] || s.rhythm || style.comp;
+    const pat = rhythmPattern(sec.rhythm, bpb);
     for (let b = 0; b < sec.bars; b++) {
       const bs = sec.start + b * bpb;
       if (sec.type === 'Outro' && b === sec.bars - 1) {
         const ch = chordAt(bs); ev.push({ tr:'keys', t:bs, d:bpb, n:ch.v, v:.9 * sv, root:ch.c.root }); continue;
       }
-      if (style.comp === 'arp') {
+      if (pat === 'arp') {
         const c0 = chordAt(bs);
         ev.push({ tr:'keys', t:bs, d:bpb, n:[c0.v[0] - 12], v:.7 * sv, root:c0.c.root });
         for (let i = 0; i < bpb * 2; i++) {
@@ -335,11 +346,14 @@ export function generate(s) {
     }
   }
 
+  // layers: chords always; melody / bass / drums only when switched on (old songs without `layers` keep all)
+  const layers = { keys:true, melody:true, bass:true, drums:true, ...(s.layers || {}) };
+  for (let i = ev.length - 1; i >= 0; i--) if (!layers[ev[i].tr]) ev.splice(i, 1);
   ev.sort((a, b) => a.t - b.t);
   const byTrack = { keys:[], melody:[], bass:[], drums:[] };
   for (const e of ev) byTrack[e.tr].push(e);
   const range = arr => arr.length ? [Math.min(...arr.map(e => e.m)), Math.max(...arr.map(e => e.m))] : [60, 72];
-  return { settings: s, style, key, bpb, sections, chords, events: ev, byTrack, totalBeats, chordAt, groups, custom, slot,
+  return { settings: s, style, key, bpb, sections, chords, events: ev, byTrack, totalBeats, chordAt, groups, custom, slot, layers,
     stats: { melody: range(byTrack.melody), bass: range(byTrack.bass) } };
 }
 
