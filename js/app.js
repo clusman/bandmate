@@ -1,4 +1,5 @@
-import { generate, STYLES, randomName } from './generator.js';
+import { generate, STYLES, randomName, SEC_COLOR } from './generator.js';
+import { parseTok, makeChord, seventhOf } from './theory.js';
 import { Engine, INSTRUMENTS, lowerBound } from './audio.js';
 import { songToMidi } from './midi.js';
 import { KEY_LABELS, MODES, makeKey, noteName, sigText, diatonicChords, pcName, mod, voiceChord } from './theory.js';
@@ -146,8 +147,8 @@ function layoutArr() {
   A.cv.style.width = W + 'px'; A.cv.style.height = H + 'px';
   A.W = W; A.H = H;
   $('#arrInner').style.width = Math.max(W, S.song.totalBeats * S.zoom + 80) + 'px';
-  const rem = Math.max(70, H - 30 - 46 - 58), mel = Math.round(rem * .58);
-  A.lanes = [{ id:'ruler', h:30 }, { id:'keys', h:46 }, { id:'melody', h:mel }, { id:'bass', h:rem - mel }, { id:'drums', h:58 }];
+  const rem = Math.max(70, H - 30 - 46 - 58), mel = Math.min(130, Math.round(rem * .58)), bass = Math.min(90, rem - mel);
+  A.lanes = [{ id:'ruler', h:30 }, { id:'keys', h:46 }, { id:'melody', h:mel }, { id:'bass', h:bass }, { id:'drums', h:58 }];
   let y = 0; for (const l of A.lanes) { l.y = y; y += l.h; }
   layoutHeads();
   S.dirty = true;
@@ -230,6 +231,8 @@ function drawArr(b, playing) {
   // muted lanes
   const anySolo = TRACKS.some(([k]) => engine.tracks[k].solo);
   TRACKS.forEach(([k], i) => { const t = engine.tracks[k]; if (t.mute || (anySolo && !t.solo)) { g.fillStyle = 'rgba(12,13,17,.6)'; g.fillRect(0, lanes[i + 1].y, W, lanes[i + 1].h); } });
+  // empty space below the last lane
+  const lb = D.y + D.h; if (lb < H) { g.fillStyle = '#0e1014'; g.fillRect(0, lb, W, H - lb); }
   // end marker
   const ex = X(song.totalBeats); if (ex < W) { g.fillStyle = 'rgba(0,0,0,.35)'; g.fillRect(ex, 0, W - ex, H); }
   // playhead
@@ -274,6 +277,7 @@ function renderSecTools() {
   el.innerHTML = `<span class="sec-name" style="color:${sec.color}">${sec.label}</span>
     <button class="pill" data-sec="play">▶ From here</button>
     <button class="pill ${S.loopOn ? 'on' : ''}" data-sec="loop">⟲ Loop</button>
+    <button class="pill" data-sec="edit">✎ Chords</button>
     <button class="pill" data-sec="chords">↻ Chords</button>
     ${sec.type !== 'Intro' && sec.type !== 'Outro' ? '<button class="pill" data-sec="melody">↻ Melody</button>' : ''}
     <button class="pill" data-sec="close">✕</button>`;
@@ -284,7 +288,11 @@ $('#secTools').addEventListener('click', e => {
   const reseed = k => { S.settings.seeds = { ...(S.settings.seeds || {}), [k]: (Math.random() * 2 ** 32) >>> 0 }; rebuild(); };
   if (a === 'play') { S.cursor = sec.start; play(sec.start); }
   if (a === 'loop') toggleLoop();
-  if (a === 'chords') { reseed('ch:' + sec.group); toast(`New chords for every ${groupName(sec)}`); }
+  if (a === 'edit') openChords(sec);
+  if (a === 'chords') {
+    if (S.settings.progs) { delete S.settings.progs[sec.key]; delete S.settings.progs[sec.group]; }
+    reseed('ch:' + sec.group); toast(`New chords for every ${groupName(sec)}`);
+  }
   if (a === 'melody') { reseed('mel:' + sec.mel); toast(`New melody for every ${groupName(sec)}`); }
   if (a === 'close') { S.sel = null; S.selChord = null; S.loopOn = false; updateLoop(); renderSecTools(); renderInfo(); }
 });
@@ -324,7 +332,7 @@ function renderChart() {
       cells += `<div class="bar ${rep ? 'rep' : ''}" data-bar="${bar}"><span class="n">${bar + 1}</span>${rep ? '%' : cs.map(c => `<span>${lab(c)}</span>`).join('')}</div>`;
       prev = key;
     }
-    return `<div class="csec"><h4><i style="background:${sec.color}"></i>${sec.label} <small>${sec.bars} bars</small></h4><div class="bars">${cells}</div></div>`;
+    return `<div class="csec"><h4 data-csec="${sec.i}"><i style="background:${sec.color}"></i>${sec.label} <small>${sec.bars} bars · ✎ edit chords</small></h4><div class="bars">${cells}</div></div>`;
   }).join('');
   S.lastBar = -2; S.lastBeat = -2;
   $('#stBeats').innerHTML = Array.from({ length: song.bpb }, () => '<i></i>').join('');
@@ -346,7 +354,9 @@ function updateChart(b, playing) {
   const curBeat = playing ? beat : -1;
   if (curBeat !== S.lastBeat) { S.lastBeat = curBeat; $$('#stBeats i').forEach((e, i) => { e.classList.toggle('on', i === curBeat); e.classList.toggle('one', i === 0); }); }
 }
-$('#chartBody').addEventListener('click', e => { const el = e.target.closest('.bar'); if (el) { seek(+el.dataset.bar * S.song.bpb); S.lastBar = -2; } });
+$('#chartBody').addEventListener('click', e => {
+  const h = e.target.closest('[data-csec]'); if (h) return openChords(S.song.sections[+h.dataset.csec]);
+  const el = e.target.closest('.bar'); if (el) { seek(+el.dataset.bar * S.song.bpb); S.lastBar = -2; } });
 $('#chartMode').addEventListener('click', e => {
   const v = e.target.closest('button')?.dataset.v; if (!v) return;
   S.chartMode = v; $$('#chartMode button').forEach(b => b.classList.toggle('on', b.dataset.v === v));
@@ -577,11 +587,141 @@ function setTempo(bpm) {
   clearTimeout(persistT); persistT = setTimeout(() => { persist(); renderInfo(); }, 300);
 }
 
+// ---------------------------------------------------------------- SONG BUILDER: structure
+const TYPES = ['Intro', 'Verse', 'Pre-Chorus', 'Chorus', 'Bridge', 'Solo', 'Outro'];
+const BARS = [1, 2, 3, 4, 6, 8, 12, 16, 24, 32];
+const curForm = () => S.song.sections.map(s => [s.type, s.bars]);
+function setForm(f) {
+  S.settings.form = f; S.sel = null; S.selChord = null; S.loopOn = false;
+  rebuild(); renderSecTools();
+}
+function openStruct() { S.modal = 'struct'; renderStruct(); $('#modal').hidden = false; }
+function renderStruct() {
+  const f = curForm(), bars = f.reduce((a, x) => a + x[1], 0), secs = Math.round(bars * S.song.bpb / S.settings.bpm * 60);
+  $('#modalTitle').textContent = 'Song structure';
+  $('#modalBody').innerHTML = `
+    <div class="lbl">Start from a pattern</div>
+    <div class="opts">${['short', 'medium', 'long'].map(k => `<button class="opt" data-st-preset="${k}">${k[0].toUpperCase() + k.slice(1)}</button>`).join('')}</div>
+    <div class="lbl">Sections, in playing order</div>
+    <div class="slist">${f.map(([t, b], i) => `
+      <div class="srow"><i style="background:${SEC_COLOR[t]}"></i>
+        <select data-st-type="${i}">${TYPES.map(x => `<option ${x === t ? 'selected' : ''}>${x}</option>`).join('')}</select>
+        <span class="stepper"><button data-st-bars="${i}" data-d="-1">−</button><b>${b}</b><button data-st-bars="${i}" data-d="1">+</button></span>
+        <button class="sb" data-st-up="${i}" ${i ? '' : 'disabled'}>↑</button><button class="sb" data-st-del="${i}" ${f.length > 1 ? '' : 'disabled'}>✕</button>
+      </div>`).join('')}</div>
+    <div class="lbl">Add section at the end</div>
+    <div class="opts">${TYPES.map(t => `<button class="opt" data-st-add="${t}" style="border-left:4px solid ${SEC_COLOR[t]}">+ ${t}</button>`).join('')}</div>
+    <div class="lbl" style="font-weight:400">${bars} bars · ${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}. Sections of the same type share their chords — edit them with ✎ Chords.</div>
+    <button class="bigbtn" data-modal-close>Done</button>`;
+}
+$('#modalBody').addEventListener('click', e => {
+  if (S.modal !== 'struct') return;
+  const t = e.target.closest('button'); if (!t) return;
+  const f = curForm(), d = t.dataset;
+  if (d.stPreset) { S.settings.length = d.stPreset; S.draft.length = d.stPreset; setForm(null); }
+  else if (d.stBars) { const i = +d.stBars, k = BARS.indexOf(f[i][1]); f[i][1] = BARS[Math.max(0, Math.min(BARS.length - 1, (k < 0 ? 5 : k) + +d.d))]; setForm(f); }
+  else if (d.stUp) { const i = +d.stUp; [f[i - 1], f[i]] = [f[i], f[i - 1]]; setForm(f); }
+  else if (d.stDel) { f.splice(+d.stDel, 1); setForm(f); }
+  else if (d.stAdd) { f.push([d.stAdd, ['Intro', 'Outro', 'Pre-Chorus'].includes(d.stAdd) ? 4 : 8]); setForm(f); }
+  else return;
+  renderStruct();
+});
+$('#modalBody').addEventListener('change', e => {
+  if (S.modal !== 'struct' || !e.target.dataset.stType) return;
+  const f = curForm(); f[+e.target.dataset.stType][0] = e.target.value; setForm(f); renderStruct();
+});
+
+// ---------------------------------------------------------------- SONG BUILDER: chord editor
+const NEXT = { 0:[3,4,5,1], 1:[4,6,3], 2:[5,3], 3:[4,0,1], 4:[0,5], 5:[1,3,4], 6:[0,2] };
+const COLOUR_TOKS = ['bVII', 'bVI', 'bIII', 'IV', 'V', 'iv', 'II'];
+const QK = [['tri', 'Triad'], ['7', '7th'], ['sus2', 'sus2'], ['sus4', 'sus4'], ['add9', 'add9']];
+const LENS = [.5, 1, 2, 4];
+const lenLabel = l => l === .5 ? '½ bar' : l === 1 ? '1 bar' : l + ' bars';
+const ceChord = x => { const p = parseTok(S.song.key, x.t); return makeChord(S.song.key, p, x.q || p.q); };
+const qKind = q => ['7', 'maj7', 'm7', 'm7b5', 'dim7'].includes(q) ? '7' : q === 'sus2' || q === 'sus4' ? q : q === 'add9' || q === 'madd9' ? 'add9' : 'tri';
+function applyKind(x, kind) {
+  const p = parseTok(S.song.key, x.t);
+  x.q = kind === 'tri' ? p.q : kind === '7' ? seventhOf(S.song.key, p) : kind === 'add9' ? (p.q === 'min' ? 'madd9' : 'add9') : kind;
+}
+function openChords(sec) {
+  const s = S.settings, g = S.song.groups[sec.group], custom = S.song.custom[sec.group];
+  const src = s.progs?.[sec.key] || g.map(c => ({ t:c.tok, q:c.q, l: custom ? c.len : S.song.slot }));
+  S.ce = { key:sec.key, type:sec.type, list:structuredClone(src), sel:-1 };
+  S.modal = 'chords'; renderCE(); $('#modal').hidden = false;
+}
+function commitCE() {
+  const s = S.settings; s.progs = { ...(s.progs || {}) };
+  if (S.ce.list.length) s.progs[S.ce.key] = structuredClone(S.ce.list); else delete s.progs[S.ce.key];
+  rebuild();
+}
+function renderCE() {
+  const { list, sel, type, key: k } = S.ce, key = S.song.key;
+  const prev = sel >= 0 ? list[sel - 1] : list[list.length - 1];
+  const pc = prev && ceChord(prev);
+  const fit = !pc ? [0, 3, 4, 5] : pc.dia ? NEXT[pc.deg] : [0, 3, 4];
+  const dia = key.iv.map((_, i) => ceChord({ t:i + 1 }));
+  const diaNames = new Set(dia.map(c => c.name));
+  const colour = COLOUR_TOKS.map(t => ({ t, c: ceChord({ t }) })).filter(x => !diaNames.has(x.c.name));
+  const total = list.reduce((a, x) => a + x.l, 0);
+  const secLens = [...new Set(S.song.sections.filter(s => s.key === k || (s.group === k)).map(s => s.bars))];
+  const x = list[sel];
+  $('#modalTitle').textContent = `${type} chords · ${key.label}`;
+  $('#modalBody').innerHTML = `
+    <div class="prog">${list.map((e, i) => { const c = ceChord(e); return `<button class="cchip ${i === sel ? 'on' : ''}" data-ce-sel="${i}" style="--fc:${FNCOL[c.fn]}"><b>${c.name}</b><small>${c.rn} · ${lenLabel(e.l)}</small></button>`; }).join('')}
+      <button class="cchip add ${sel < 0 ? 'on' : ''}" data-ce-sel="-1"><b>＋</b><small>add</small></button></div>
+    <div class="lbl" style="font-weight:400">${total} bar${total === 1 ? '' : 's'}, repeats to fill the ${type} (${secLens.join(' / ') || '?'} bars).</div>
+    ${x ? `<div class="card ce-ctl">
+      <div class="lbl">Length</div><div class="chips">${LENS.map(l => `<button class="${x.l === l ? 'on' : ''}" data-ce-len="${l}">${lenLabel(l)}</button>`).join('')}</div>
+      <div class="lbl">Type</div><div class="chips">${QK.map(([q, n]) => `<button class="${qKind(x.q) === q ? 'on' : ''}" data-ce-q="${q}">${n}</button>`).join('')}</div>
+      <div class="chips" style="margin-top:10px"><button data-ce-mv="-1">◀ Move</button><button data-ce-mv="1">Move ▶</button><button data-ce-del>✕ Remove</button></div>
+    </div>` : ''}
+    <div class="lbl">${x ? `Tap to replace ${ceChord(x).name}` : 'Tap to add'} · <span style="color:var(--accent)">★ fits well after ${pc ? pc.name : 'the start'}</span></div>
+    <div class="dchords">${dia.map((c, i) => `<button class="dchord ${fit.includes(i) ? 'fit' : ''}" data-ce-add="${i + 1}"><span class="rn">${c.rn}${fit.includes(i) ? ' ★' : ''}</span><span class="nm">${c.name}</span><span class="tag fn-${c.fn}" style="align-self:flex-start">${c.fn}</span></button>`).join('')}</div>
+    <div class="lbl">Colour chords (borrowed — use for surprise)</div>
+    <div class="dchords">${colour.map(({ t, c }) => `<button class="dchord" data-ce-add="${t}"><span class="rn">${c.rn}</span><span class="nm">${c.name}</span></button>`).join('')}</div>
+    <div class="opts" style="grid-template-columns:1fr 1fr 1fr;margin-top:14px">
+      <button class="opt" data-ce-play>▶ Hear</button><button class="opt" data-ce-reset>↺ Generated</button><button class="opt on" data-modal-close>Done</button></div>`;
+}
+let ceTimers = [];
+function stopCE() { ceTimers.forEach(clearTimeout); ceTimers = []; }
+function playCE() {
+  stopCE();
+  let t = 0, prev = null; const spb = 60 / S.settings.bpm, bpb = S.song.bpb, inst = engine.tracks.keys.inst === 'dist' ? 'guitar' : engine.tracks.keys.inst;
+  S.ce.list.forEach((x, i) => {
+    const v = voiceChord(ceChord(x), prev); prev = v; const d = x.l * bpb * spb;
+    ceTimers.push(setTimeout(() => { if (S.modal !== 'chords') return; S.ce.sel = i; renderCE(); engine.preview(v, inst, d * .95); }, t * 1000));
+    t += d;
+  });
+  ceTimers.push(setTimeout(() => { if (S.modal === 'chords') { S.ce.sel = -1; renderCE(); } }, t * 1000));
+}
+$('#modalBody').addEventListener('click', e => {
+  if (S.modal !== 'chords') return;
+  const b = e.target.closest('button'); if (!b) return;
+  const d = b.dataset, ce = S.ce, L = ce.list;
+  if (d.ceSel !== undefined) { ce.sel = +d.ceSel; if (ce.sel >= 0) previewChord(voiceChord(ceChord(L[ce.sel]), null)); renderCE(); return; }
+  if (d.cePlay !== undefined) return playCE();
+  if (d.ceAdd) {
+    const t = /^\d$/.test(d.ceAdd) ? +d.ceAdd : d.ceAdd, p = parseTok(S.song.key, t);
+    if (ce.sel >= 0) { L[ce.sel] = { t, q:p.q, l:L[ce.sel].l }; }
+    else L.push({ t, q:p.q, l: L.length ? L[L.length - 1].l : S.song.slot });
+    previewChord(voiceChord(ceChord({ t }), null));
+  } else if (d.ceLen) L[ce.sel].l = +d.ceLen;
+  else if (d.ceQ) { applyKind(L[ce.sel], d.ceQ); previewChord(voiceChord(ceChord(L[ce.sel]), null)); }
+  else if (d.ceMv) { const i = ce.sel, j = i + +d.ceMv; if (j < 0 || j >= L.length) return; [L[i], L[j]] = [L[j], L[i]]; ce.sel = j; }
+  else if (d.ceDel !== undefined) { L.splice(ce.sel, 1); ce.sel = -1; }
+  else if (d.ceReset !== undefined) {
+    if (S.settings.progs) delete S.settings.progs[ce.key];
+    rebuild(); const sec = S.song.sections.find(s => s.key === ce.key); if (sec) return openChords(sec);
+    return;
+  } else return;
+  commitCE(); renderCE();
+});
+
 // ---------------------------------------------------------------- library / export / misc
-function openModal(title, html) { $('#modalTitle').textContent = title; $('#modalBody').innerHTML = html; $('#modal').hidden = false; }
-function closeModal() { $('#modal').hidden = true; }
+function openModal(title, html) { S.modal = 'lib'; $('#modalTitle').textContent = title; $('#modalBody').innerHTML = html; $('#modal').hidden = false; }
+function closeModal() { $('#modal').hidden = true; S.modal = null; stopCE(); }
 $('#modalClose').addEventListener('click', closeModal);
-$('#modal').addEventListener('click', e => { if (e.target.id === 'modal') closeModal(); });
+$('#modal').addEventListener('click', e => { if (e.target.id === 'modal' || e.target.closest('[data-modal-close]')) closeModal(); });
 function renderLib() {
   const lib = store.get('bm.lib', []);
   openModal('Library', lib.length ? lib.map(x => {
@@ -646,6 +786,7 @@ $('#zoomIn').addEventListener('click', () => setZoom(S.zoom * 1.35));
 $('#zoomOut').addEventListener('click', () => setZoom(S.zoom / 1.35));
 $('#arrScroll').addEventListener('scroll', () => S.dirty = true, { passive:true });
 $('#btnLib').addEventListener('click', renderLib);
+$('#btnStruct').addEventListener('click', openStruct);
 $('#btnSave').addEventListener('click', saveSong);
 $('#btnMidi').addEventListener('click', exportMidi);
 $('#songName').addEventListener('click', () => {

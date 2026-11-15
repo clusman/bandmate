@@ -57,23 +57,23 @@ export const STYLES = {
       chorus:[[4,1,5,1],[4,5,1,6],[1,4,5,5]], bridge:[[6,5,4,4],[4,1,4,5]] } },
 };
 
-const FORMS = {
+export const FORMS = {
   short:  [['Intro',4],['Verse',8],['Chorus',8],['Verse',8],['Chorus',8],['Outro',4]],
   medium: [['Intro',4],['Verse',8],['Pre-Chorus',4],['Chorus',8],['Verse',8],['Pre-Chorus',4],['Chorus',8],['Bridge',8],['Chorus',8],['Outro',4]],
   long:   [['Intro',8],['Verse',8],['Pre-Chorus',4],['Chorus',8],['Verse',8],['Pre-Chorus',4],['Chorus',8],['Solo',8],['Bridge',8],['Chorus',8],['Chorus',8],['Outro',4]],
 };
-const BLUES_FORMS = {
+export const BLUES_FORMS = {
   short:  [['Intro',4],['Verse',12],['Verse',12],['Outro',4]],
   medium: [['Intro',4],['Verse',12],['Verse',12],['Solo',12],['Verse',12],['Outro',4]],
   long:   [['Intro',4],['Verse',12],['Verse',12],['Solo',12],['Solo',12],['Verse',12],['Verse',12],['Outro',4]],
 };
 export const SEC_COLOR = { Intro:'#7c8aa5', Verse:'#3d8bfd', 'Pre-Chorus':'#20c997', Chorus:'#f59f00', Bridge:'#e64980', Solo:'#9775fa', Outro:'#7c8aa5' };
-const SEC_KEY = { Intro:'intro', Verse:'verse', 'Pre-Chorus':'pre', Chorus:'chorus', Bridge:'bridge', Solo:'solo', Outro:'outro' };
+export const SEC_KEY = { Intro:'intro', Verse:'verse', 'Pre-Chorus':'pre', Chorus:'chorus', Bridge:'bridge', Solo:'solo', Outro:'outro' };
 const SEC_VEL = { Intro:.75, Verse:.82, 'Pre-Chorus':.9, Chorus:1, Bridge:.88, Solo:.95, Outro:.8 };
 
-function groupOf(type, style) {
+function groupOf(type, style, s) {
   const k = SEC_KEY[type];
-  if (style.progs[k]) return k;
+  if (s.progs?.[k]?.length || style.progs[k]) return k;
   return { intro:'chorus', outro:'chorus', solo:'verse', pre:'verse', chorus:'verse', bridge:'verse' }[k] || 'verse';
 }
 
@@ -128,7 +128,7 @@ function realizeProg(r, style, key, g, s) {
       else if (roll2 < .8) q = (q === 'maj' && roll2 < .7) ? 'sus4' : 'sus2';
       else q = q === 'maj' ? 'add9' : q === 'min' ? 'madd9' : q;
     }
-    return makeChord(key, p, q);
+    const c = makeChord(key, p, q); c.tok = tok; return c;
   });
 }
 
@@ -136,7 +136,7 @@ export function generate(s) {
   const style = STYLES[s.style];
   const key = makeKey(s.tonic, s.mode);
   const bpb = s.bpb;
-  const form = (style.form === 'blues' ? BLUES_FORMS : FORMS)[s.length];
+  const form = s.form?.length ? s.form : (style.form === 'blues' ? BLUES_FORMS : FORMS)[s.length];
   const seeds = s.seeds || {};
   const seedOf = (kind, g) => seeds[kind + ':' + g] ?? hash(s.seed + ':' + kind + ':' + g);
 
@@ -146,29 +146,49 @@ export function generate(s) {
   const sections = form.map(([type, bars], i) => {
     cnt[type] = (cnt[type] || 0) + 1;
     const sec = { i, type, label: total[type] > 1 ? `${type} ${cnt[type]}` : type, n: cnt[type],
-      start: bar * bpb, bars, len: bars * bpb, group: groupOf(type, style),
-      mel: type === 'Solo' ? 'solo' : groupOf(type, style), color: SEC_COLOR[type] };
+      start: bar * bpb, bars, len: bars * bpb, group: groupOf(type, style, s), key: SEC_KEY[type],
+      mel: type === 'Solo' ? 'solo' : groupOf(type, style, s), color: SEC_COLOR[type] };
     bar += bars; return sec;
   });
   const totalBeats = bar * bpb;
 
   // Chord progressions per group
-  const groups = {};
-  for (const sec of sections) if (!groups[sec.group]) groups[sec.group] = realizeProg(rng(seedOf('ch', sec.group)), style, key, sec.group, s);
+  const groups = {}, custom = {};
+  for (const sec of sections) {
+    const g = sec.group;
+    if (groups[g]) continue;
+    const user = s.progs?.[g];
+    if (user?.length) {
+      custom[g] = true;
+      groups[g] = user.map(x => { const p = parseTok(key, x.t); const c = makeChord(key, p, x.q || p.q); c.tok = x.t; c.len = x.l || 1; return c; });
+    } else groups[g] = realizeProg(rng(seedOf('ch', g)), style, key, g, s);
+  }
   const tonicP = parseTok(key, 1), tonicChord = makeChord(key, tonicP);
+  const slot = style.form === 'blues' ? 1 : ({ slow:2, normal:1, fast:.5 }[s.hr] || 1);
 
   const chords = [];
+  const put = (sec, t, d, c) => {
+    const last = chords[chords.length - 1];
+    if (last && last.sec === sec.i && last.c.name === c.name && Math.abs(last.t + last.d - t) < 1e-6) last.d += d;
+    else chords.push({ t, d, c, sec: sec.i });
+  };
   for (const sec of sections) {
     const prog = groups[sec.group];
-    let cd = style.form === 'blues' ? bpb : bpb * ({ slow:2, normal:1, fast:.5 }[s.hr] || 1);
+    if (custom[sec.group]) {
+      let t = 0, j = 0;
+      while (t < sec.len - 1e-6) {
+        const c = prog[j % prog.length], d = Math.min(c.len * bpb, sec.len - t);
+        put(sec, sec.start + t, d, c); t += d; j++;
+      }
+      continue;
+    }
+    let cd = bpb * slot;
     if (bpb === 3 && cd === 1.5) cd = 3;
     while (cd > bpb && prog.length * cd > sec.len) cd /= 2;
     const n = Math.max(1, Math.round(sec.len / cd));
     for (let j = 0; j < n; j++) {
       const c = (sec.type === 'Outro' && j === n - 1) ? tonicChord : prog[j % prog.length];
-      const t = sec.start + j * cd, last = chords[chords.length - 1];
-      if (last && last.sec === sec.i && last.c.name === c.name) last.d += cd;
-      else chords.push({ t, d: cd, c, sec: sec.i });
+      put(sec, sec.start + j * cd, cd, c);
     }
   }
   let prevV = null;
@@ -319,7 +339,7 @@ export function generate(s) {
   const byTrack = { keys:[], melody:[], bass:[], drums:[] };
   for (const e of ev) byTrack[e.tr].push(e);
   const range = arr => arr.length ? [Math.min(...arr.map(e => e.m)), Math.max(...arr.map(e => e.m))] : [60, 72];
-  return { settings: s, style, key, bpb, sections, chords, events: ev, byTrack, totalBeats, chordAt,
+  return { settings: s, style, key, bpb, sections, chords, events: ev, byTrack, totalBeats, chordAt, groups, custom, slot,
     stats: { melody: range(byTrack.melody), bass: range(byTrack.bass) } };
 }
 

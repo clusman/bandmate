@@ -167,6 +167,27 @@ select { background: var(--panel2); color: var(--text); border: 1px solid var(--
 .strip .ms button.s.on { background: #5a4a14; color: #ffe08a; }
 .strip input { grid-column: 1 / -1; }
 
+/* song builder */
+.slist { display: flex; flex-direction: column; gap: 6px; }
+.srow { display: flex; align-items: center; gap: 6px; background: var(--panel2); border: 1px solid var(--line2); border-radius: 10px; padding: 6px 8px; }
+.srow > i { width: 6px; align-self: stretch; border-radius: 3px; flex: none; }
+.srow select { flex: 1; min-width: 0; }
+.stepper { display: flex; align-items: center; gap: 4px; }
+.stepper b { min-width: 22px; text-align: center; }
+.stepper button, .sb { width: 32px; height: 32px; border-radius: 8px; border: 1px solid var(--line2); background: var(--panel); font-weight: 800; }
+.sb:disabled { opacity: .3; }
+.prog { display: flex; flex-wrap: wrap; gap: 6px; }
+.cchip { display: flex; flex-direction: column; align-items: flex-start; padding: 7px 10px; border-radius: 10px; background: var(--panel2); border: 1px solid var(--line2); border-left: 4px solid var(--fc, var(--line2)); min-width: 64px; }
+.cchip b { font-size: 17px; }
+.cchip small { font-size: 10px; color: var(--dim); }
+.cchip.on { background: #2a210b; border-color: var(--accent); border-left-color: var(--fc, var(--accent)); }
+.cchip.add { align-items: center; border-style: dashed; border-left-width: 1px; }
+.ce-ctl { margin: 10px 0 0; padding: 10px; }
+.ce-ctl .lbl { margin-top: 6px; }
+.dchord.fit { border-color: #8a6a1c; background: #241d0c; }
+.dchord.fit .rn { color: var(--accent); }
+.csec h4 { cursor: pointer; }
+
 /* modal + toast */
 .modal { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: flex; align-items: flex-end; justify-content: center; z-index: 10; }
 .modal[hidden] { display: none; }
